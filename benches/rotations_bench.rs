@@ -1,15 +1,11 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use math_bench::generators::{random_euler, random_matrix, random_quat};
 use nalgebra::{Rotation3, UnitQuaternion};
-use rand::Rng; // Нужно для генерации индексов в тесте кэша
+use rand::Rng;
 
 fn bench_rotation_ops(c: &mut Criterion) {
     let mut rng = rand::thread_rng();
 
-    // =========================================================
-    // ГРУППА 1: Композиция (Single Operation Performance)
-    // Сравнение "чистой" математики: умножение двух поворотов.
-    // =========================================================
     let mut group_comp = c.benchmark_group("Composition (Single)");
 
     let q1 = random_quat(&mut rng);
@@ -27,8 +23,6 @@ fn bench_rotation_ops(c: &mut Criterion) {
         b.iter(|| black_box(m1) * black_box(m2))
     });
 
-    // Углы Эйлера нельзя просто перемножить. Их нужно конвертировать в кватернион,
-    // умножить и вернуть обратно. Это "честная" цена работы с Эйлерами.
     group_comp.bench_function("Euler (via Quat)", |b| {
         b.iter(|| {
             let q_a = UnitQuaternion::from_euler_angles(e1.x, e1.y, e1.z);
@@ -39,10 +33,6 @@ fn bench_rotation_ops(c: &mut Criterion) {
     });
     group_comp.finish();
 
-    // =========================================================
-    // ГРУППА 2: Композиция (Batch/Throughput)
-    // Проверяем пропускную способность памяти при линейном чтении.
-    // =========================================================
     let mut group_batch = c.benchmark_group("Composition (Batch 10k)");
     let size = 10_000;
 
@@ -68,10 +58,6 @@ fn bench_rotation_ops(c: &mut Criterion) {
     });
     group_batch.finish();
 
-    // =========================================================
-    // ГРУППА 3: Интерполяция (Single)
-    // SLERP (сферическая) vs NLERP (линейная + нормализация).
-    // =========================================================
     let mut group_interp = c.benchmark_group("Interpolation (Single)");
     let t = 0.5;
 
@@ -83,7 +69,6 @@ fn bench_rotation_ops(c: &mut Criterion) {
         b.iter(|| black_box(q1).nlerp(&black_box(q2), black_box(t)))
     });
 
-    // Матрицы не интерполируются напрямую, обычно их конвертируют в кватернионы.
     group_interp.bench_function("Matrix (via Quat)", |b| {
         b.iter(|| {
             let qa = UnitQuaternion::from_rotation_matrix(&m1);
@@ -94,10 +79,6 @@ fn bench_rotation_ops(c: &mut Criterion) {
     });
     group_interp.finish();
 
-    // =========================================================
-    // ГРУППА 4: Интерполяция (Batch)
-    // Массовая обработка анимаций.
-    // =========================================================
     let mut group_interp_batch = c.benchmark_group("Interpolation (Batch 10k)");
 
     group_interp_batch.bench_function("Quaternion SLERP Vector", |b| {
@@ -108,7 +89,6 @@ fn bench_rotation_ops(c: &mut Criterion) {
         })
     });
 
-    // Линейное смешивание матриц (математически неверно для вращения, но быстро).
     group_interp_batch.bench_function("Matrix Linear Mix (Wrong but fast)", |b| {
         b.iter(|| {
             matrices_vec.iter().zip(matrices_vec2.iter()).for_each(|(a, b)| {
@@ -122,10 +102,6 @@ fn bench_rotation_ops(c: &mut Criterion) {
     });
     group_interp_batch.finish();
 
-    // =========================================================
-    // ГРУППА 5: Накопление ошибки и нормализация
-    // Имитация физического движка: 100 шагов симуляции.
-    // =========================================================
     let mut group_accum = c.benchmark_group("Accumulation & Normalization");
     let steps = 100;
     let delta_q = UnitQuaternion::from_euler_angles(0.01, 0.01, 0.01);
@@ -136,7 +112,6 @@ fn bench_rotation_ops(c: &mut Criterion) {
             let mut q = q1;
             for _ in 0..steps {
                 q = q * delta_q;
-                // Принудительная нормализация
                 let raw = q.into_inner();
                 q = UnitQuaternion::new_normalize(raw);
             }
@@ -149,7 +124,6 @@ fn bench_rotation_ops(c: &mut Criterion) {
             let mut m = m1;
             for _ in 0..steps {
                 m = m * delta_m;
-                // Ортонормировка (Gram-Schmidt / SVD) - дорогая операция
                 m = UnitQuaternion::from_rotation_matrix(&m).to_rotation_matrix();
             }
             black_box(m)
@@ -157,13 +131,8 @@ fn bench_rotation_ops(c: &mut Criterion) {
     });
     group_accum.finish();
 
-    // =========================================================
-    // ГРУППА 6: Конвертации (Cost of switching representations)
-    // Сколько стоит переход от одного формата к другому.
-    // =========================================================
     let mut group_conv = c.benchmark_group("Conversions");
 
-    // Euler -> Quaternion (Часто при загрузке)
     group_conv.bench_function("Euler to Quaternion", |b| {
         b.iter(|| {
             UnitQuaternion::from_euler_angles(
@@ -174,21 +143,18 @@ fn bench_rotation_ops(c: &mut Criterion) {
         })
     });
 
-    // Quaternion -> Matrix (Часто перед рендером)
     group_conv.bench_function("Quaternion to Matrix", |b| {
         b.iter(|| {
             black_box(q1).to_rotation_matrix()
         })
     });
 
-    // Matrix -> Quaternion (Редко)
     group_conv.bench_function("Matrix to Quaternion", |b| {
         b.iter(|| {
             UnitQuaternion::from_rotation_matrix(&black_box(m1))
         })
     });
 
-    // Matrix -> Euler (Очень дорого, тригонометрия)
     group_conv.bench_function("Matrix to Euler", |b| {
         b.iter(|| {
             black_box(m1).euler_angles()
@@ -196,14 +162,9 @@ fn bench_rotation_ops(c: &mut Criterion) {
     });
     group_conv.finish();
 
-    // =========================================================
-    // ГРУППА 7: Cache Locality (Random Access)
-    // Эмуляция сложной сцены: доступ к данным в случайном порядке.
-    // =========================================================
     let mut group_cache = c.benchmark_group("Cache Locality (Random Access)");
-    let huge_size = 100_000; // Достаточно, чтобы вылезти из L1/L2 кэша
+    let huge_size = 100_000;
 
-    // Генерируем случайные индексы доступа
     let indices: Vec<usize> = (0..10_000)
         .map(|_| rng.gen_range(0..huge_size))
         .collect();
@@ -215,7 +176,6 @@ fn bench_rotation_ops(c: &mut Criterion) {
         b.iter(|| {
             let mut acc = UnitQuaternion::identity();
             for &idx in &indices {
-                // Читаем из случайного места памяти и умножаем
                 acc = acc * huge_quats[idx];
             }
             black_box(acc)
